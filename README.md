@@ -14,6 +14,7 @@ The content lives in a folder named `start/` next to `bot.py`.
 - **Every subfolder is a button** on its parent's page.
 - **Files in a folder are sent** to the user when they open that page.
 - Navigation edits the same message, so the chat does not fill up with menus.
+- Anything a user sends to the bot (text, a photo, a sticker, an unknown command) shows the main menu, exactly like `/start`.
 - Content is read from disk on every request, so you can add, rename or edit folders and files while the bot is running. No restart needed.
 
 ### Example

@@ -504,6 +504,7 @@ async def nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
+        await start(update, context)
         return
     total, active_today, today_i, week_i, last_name = get_stats()
     await update.message.reply_text(
@@ -521,6 +522,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
+        await start(update, context)
         return
     context.user_data["bc_state"] = "waiting"
     await update.message.reply_text("📢 أرسل الرسالة التي تريد إذاعتها (أو /cancel للإلغاء):")
@@ -528,6 +530,7 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
+        await start(update, context)
         return
     context.user_data.pop("bc_state", None)
     context.user_data.pop("bc_msg", None)
@@ -536,6 +539,7 @@ async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def broadcast_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("bc_state") != "waiting":
+        await start(update, context)
         return
     msg = update.effective_message
     context.user_data["bc_state"] = "confirm"
@@ -634,6 +638,7 @@ def main():
                 broadcast_capture,
             )
         )
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE, start))
     app.add_error_handler(on_error)
 
     print("البوت يعمل...")
