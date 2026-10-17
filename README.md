@@ -61,6 +61,7 @@ Put a direct file URL in `fetch.txt` and the bot sends that file to the user whe
 
 - One URL per line. Lines that are not `http://` or `https://` URLs are ignored.
 - The file type is detected from the URL's extension and sent exactly like local files (video, audio, photo, PDF or document).
+- Telegram only accepts certain kinds of files when they are sent by URL. Web pages (`.html`) and plain text files are rejected, and the user gets the link as text instead. Use ZIP (tested), PDF, images, MP4 or MP3 files.
 - Telegram limits files sent by URL to **20 MB** (**5 MB** for photos; bigger photos go as documents). Larger files, or a URL Telegram cannot fetch, are not sent: the user gets the link as a text message instead.
 - The URL must be public (no login) and point directly to the file.
 - After the first send, the file's Telegram `file_id` is cached. Before each send the bot makes a tiny `HEAD` request (headers only, no download) to see if the remote file changed (size, `ETag` or `Last-Modified`), and sends the new version if it did.
