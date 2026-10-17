@@ -6,11 +6,14 @@ import logging
 import os
 import re
 import sqlite3
+import zlib
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote, urlparse
 
+import httpx
 from dotenv import dotenv_values
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.constants import ParseMode
@@ -45,6 +48,8 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 AUDIO_EXTS = {".mp3", ".ogg", ".wav", ".m4a", ".opus"}
 MAX_UPLOAD = 50 * 1024 * 1024
 MAX_PHOTO = 10 * 1024 * 1024
+MAX_URL_FILE = 20 * 1024 * 1024
+MAX_URL_PHOTO = 5 * 1024 * 1024
 CAPTION_LIMIT = 1000
 TEXT_LIMIT = 4000
 
@@ -214,6 +219,34 @@ def cache_del(path):
 
 
 # ═══════════════════════════════════════
+def url_cache_get(url, sig):
+    with closing(db()) as conn:
+        row = conn.execute(
+            "SELECT file_id, size, mtime_ns FROM file_cache WHERE path=?", ("url:" + url,)
+        ).fetchone()
+    if not row:
+        return None
+    if sig is None or (row["size"], row["mtime_ns"]) == sig:
+        return row["file_id"]
+    return None
+
+
+def url_cache_put(url, sig, file_id):
+    if not file_id:
+        return
+    size, tag = sig or (0, 0)
+    with closing(db()) as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO file_cache(path, size, mtime_ns, file_id) VALUES(?,?,?,?)",
+            ("url:" + url, size, tag, file_id),
+        )
+
+
+def url_cache_del(url):
+    with closing(db()) as conn, conn:
+        conn.execute("DELETE FROM file_cache WHERE path=?", ("url:" + url,))
+
+
 # Paths and navigation
 # ═══════════════════════════════════════
 _token_index = {}
@@ -277,7 +310,7 @@ def list_files(folder):
         name = p.name.lower()
         if not p.is_file() or name.startswith("."):
             continue
-        if name in ("main.md", "link.txt"):
+        if name in ("main.md", "link.txt", "fetch.txt"):
             continue
         if p.stem.lower() == "main" and p.suffix.lower() in IMAGE_EXTS:
             continue
@@ -307,6 +340,18 @@ def folder_link(folder):
     lines = read_text(f).splitlines()
     url = lines[0].strip() if lines else ""
     return url if re.match(r"^https?://\S+$", url, re.IGNORECASE) else None
+
+
+def fetch_urls(folder):
+    f = folder / "fetch.txt"
+    if not f.is_file():
+        return []
+    urls = []
+    for line in read_text(f).splitlines():
+        line = line.strip()
+        if re.match(r"^https?://\S+$", line, re.IGNORECASE):
+            urls.append(quote(line, safe=":/?&=%#+@,;~!$'()*[]"))
+    return urls
 
 
 def build_keyboard(folder, subs, is_root):
@@ -403,14 +448,13 @@ def media_id(msg):
     return media.file_id if media else None
 
 
-def pick_kinds(bot, path, size):
-    ext = path.suffix.lower()
+def pick_kinds(bot, ext, size, photo_limit=MAX_PHOTO):
     doc = ("document", bot.send_document)
     if ext in VIDEO_EXTS:
         return [("video", bot.send_video), doc]
     if ext in AUDIO_EXTS:
         return [("audio", bot.send_audio), doc]
-    if ext in PHOTO_EXTS and size <= MAX_PHOTO:
+    if ext in PHOTO_EXTS and size <= photo_limit:
         return [("photo", bot.send_photo), doc]
     return [doc]
 
@@ -420,7 +464,7 @@ async def send_file(context, chat_id, path):
         size = path.stat().st_size
     except OSError:
         return
-    kinds = pick_kinds(context.bot, path, size)
+    kinds = pick_kinds(context.bot, path.suffix.lower(), size)
 
     cached = cache_get(path)
     if cached:
@@ -454,6 +498,60 @@ async def send_file(context, chat_id, path):
         return
 
 
+async def remote_signature(url):
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.head(url)
+        if r.status_code >= 400:
+            return None
+        size = int(r.headers.get("content-length") or 0)
+        tag = r.headers.get("etag") or r.headers.get("last-modified") or ""
+        return size, zlib.crc32(tag.encode())
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+async def send_remote(context, chat_id, url):
+    async def link_fallback():
+        await context.bot.send_message(
+            chat_id, f"⚠️ تعذر إرسال الملف مباشرة، يمكنك تحميله من هنا:\n{url}"
+        )
+
+    ext = PurePosixPath(urlparse(url).path).suffix.lower()
+    sig = await remote_signature(url)
+    size = sig[0] if sig else 0
+    if size > MAX_URL_FILE:
+        await link_fallback()
+        return
+    kinds = pick_kinds(context.bot, ext, size, MAX_URL_PHOTO)
+
+    cached = url_cache_get(url, sig)
+    if cached:
+        arg, method = kinds[0]
+        try:
+            await method(chat_id=chat_id, **{arg: cached})
+            return
+        except TelegramError:
+            url_cache_del(url)
+
+    for i, (arg, method) in enumerate(kinds):
+        try:
+            msg = await method(chat_id=chat_id, **{arg: url})
+        except BadRequest as e:
+            if i < len(kinds) - 1:
+                continue
+            log.error("failed to send url %s: %s", url, e)
+            await link_fallback()
+            return
+        except TelegramError as e:
+            log.error("failed to send url %s: %s", url, e)
+            await link_fallback()
+            return
+        if i == 0:
+            url_cache_put(url, sig, media_id(msg))
+        return
+
+
 async def show_page(context, chat_id, folder, user, query=None, is_root=False):
     raw = read_text(folder / "main.md")
     image = find_main_image(folder)
@@ -467,6 +565,8 @@ async def show_page(context, chat_id, folder, user, query=None, is_root=False):
 
     for f in list_files(folder):
         await send_file(context, chat_id, f)
+    for url in fetch_urls(folder):
+        await send_remote(context, chat_id, url)
 
 
 # ═══════════════════════════════════════

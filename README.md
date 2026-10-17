@@ -50,9 +50,21 @@ What the user sees:
 | --- | --- |
 | `main.md` | Text of the page. Plain text (it is HTML-escaped, so no formatting). `{name}` is replaced with a mention of the user. |
 | `main.png` / `main.jpg` / `main.jpeg` / `main.webp` | Main image of the page. The text is used as its caption. |
+| `fetch.txt` | Sends a file that lives on the internet, straight to the user. Put one or more URLs in it, one per line (for example `https://example.com/files/1/lesson.pdf`). See *Remote files* below. |
 | `link.txt` | Turns the **folder itself** into a URL button. The first line must start with `http://` or `https://`. The folder's content is not reachable when it has a valid `link.txt`. If the link is invalid, the folder behaves as a normal folder. |
 
 None of these files are ever sent to users as attachments.
+
+### Remote files (`fetch.txt`)
+
+Put a direct file URL in `fetch.txt` and the bot sends that file to the user when the page is opened. The bot never downloads the file itself: it hands the URL to Telegram, and Telegram's servers fetch it.
+
+- One URL per line. Lines that are not `http://` or `https://` URLs are ignored.
+- The file type is detected from the URL's extension and sent exactly like local files (video, audio, photo, PDF or document).
+- Telegram limits files sent by URL to **20 MB** (**5 MB** for photos; bigger photos go as documents). Larger files, or a URL Telegram cannot fetch, are not sent: the user gets the link as a text message instead.
+- The URL must be public (no login) and point directly to the file.
+- After the first send, the file's Telegram `file_id` is cached. Before each send the bot makes a tiny `HEAD` request (headers only, no download) to see if the remote file changed (size, `ETag` or `Last-Modified`), and sends the new version if it did.
+- You can mix: a folder can have its own files, a `main.md`, and a `fetch.txt` at the same time.
 
 ### Page rules
 
